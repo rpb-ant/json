@@ -1934,6 +1934,47 @@ fn test_stack_overflow() {
     test_parse_err::<Value>(&[(&brackets, "recursion limit exceeded at line 1 column 128")]);
 }
 
+#[cfg(feature = "raw_value")]
+#[test]
+fn test_stack_overflow_raw_value() {
+    // The private key by which RawValue identifies itself to serde_json's
+    // Serializer and Deserializer. Nothing stops it from appearing in JSON text.
+    const TOKEN: &str = "$serde_json::private::RawValue";
+
+    let open = "[".repeat(100);
+    let close = "]".repeat(100);
+
+    // Put the given JSON into a string under that key, within 100 arrays.
+    let wrap = |json: &str| {
+        // Escape using \u so that repeated wrapping lengthens each escape by a
+        // constant number of bytes instead of doubling its backslashes.
+        let escaped = json.replace('\\', "\\u005c").replace('"', "\\u0022");
+        format!(r#"{open}{{"{TOKEN}":"{escaped}"}}{close}"#)
+    };
+
+    // Whatever is successfully deserialized must be within the recursion limit,
+    // so it can be deserialized again after being serialized.
+    let test = |json: &str| {
+        if let Ok(value) = from_str::<Value>(json) {
+            from_str::<Value>(&to_string(&value).unwrap()).unwrap();
+        }
+    };
+
+    // If the string were parsed as JSON by a new Deserializer, that one would
+    // start over with a recursion limit of 128 while the frames of the previous
+    // Deserializer are still on the stack. No individual level comes close to
+    // the limit, but all together this would recurse 100 deep per level.
+    let levels = if cfg!(miri) { 20 } else { 200 };
+    let mut json = "0".to_owned();
+    for _ in 0..levels {
+        json = wrap(&json);
+    }
+    test(&json);
+
+    // Likewise 200 deep, which does not overflow the stack.
+    test(&wrap(&format!("{open}0{close}")));
+}
+
 #[test]
 #[cfg(feature = "unbounded_depth")]
 fn test_disable_recursion_limit() {
